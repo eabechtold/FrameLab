@@ -429,7 +429,7 @@ class FrameLabApplication:
         table.rowconfigure(0, weight=1)
         self.timestamp_tree = ttk.Treeview(
             table, columns=("num", "time", "frame", "description"), show="tree headings",
-            height=5, selectmode="browse", style="Timestamps.Treeview",
+            height=5, selectmode="extended", style="Timestamps.Treeview",
         )
         self.timestamp_tree.heading(
             "#0", text="Flag", anchor="center", command=lambda: self.sort_timestamps_by("#0"),
@@ -451,6 +451,7 @@ class FrameLabApplication:
         tree_scroll.grid(row=0, column=1, sticky="ns")
         self.timestamp_tree.bind("<<TreeviewSelect>>", lambda e: self.jump_to_selected_timestamp())
         self.timestamp_tree.bind("<Delete>", lambda e: self.delete_timestamp())
+        self.timestamp_tree.bind("<Control-a>", self.select_all_timestamps)
 
         # Right: actions that operate on the whole table or selection.
         actions = ttk.Frame(tab)
@@ -1099,12 +1100,19 @@ class FrameLabApplication:
         selection = self.timestamp_tree.selection()
         if not selection:
             return
-        del self.timestamps[int(selection[0])]
+        # Delete from the end so earlier indices stay valid.
+        for index in sorted((int(iid) for iid in selection), reverse=True):
+            del self.timestamps[index]
         self.refresh_timestamps()
+
+    def select_all_timestamps(self, event=None):
+        self.timestamp_tree.selection_set(self.timestamp_tree.get_children())
+        return "break"
 
     def jump_to_selected_timestamp(self):
         selection = self.timestamp_tree.selection()
-        if not selection or self.cap is None or self.busy:
+        # Only a single selection jumps; Ctrl/Shift multi-selects leave the video where it is.
+        if len(selection) != 1 or self.cap is None or self.busy:
             return
         frame = self.timestamps[int(selection[0])]["frame"]
         if frame != self.current_frame:
