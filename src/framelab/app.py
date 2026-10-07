@@ -1412,7 +1412,8 @@ class FrameLabApplication:
         scale = min(available_w / w, available_h / h, PREVIEW_MAX_UPSCALE * self.zoom)
         new_w = max(1, int(w * scale))
         new_h = max(1, int(h * scale))
-        interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+        # Nearest-neighbor when magnifying keeps individual pixels crisp instead of blurred.
+        interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_NEAREST
         return cv2.resize(frame, (new_w, new_h), interpolation=interpolation)
 
     def show_frame(self, frame_num):
