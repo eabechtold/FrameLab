@@ -451,6 +451,17 @@ class FrameLabApplication:
         tree_scroll.grid(row=0, column=1, sticky="ns")
         self.timestamp_tree.bind("<<TreeviewSelect>>", lambda e: self.jump_to_selected_timestamp())
         self.timestamp_tree.bind("<Delete>", lambda e: self.delete_timestamp())
+        # The Treeview's built-in Left/Right handling moves the selection to the
+        # neighbouring row, which jumps to another timestamp. Step frames instead.
+        for sequence, delta in (
+            ("<Left>", -1), ("<Right>", 1),
+            ("<Shift-Left>", -10), ("<Shift-Right>", 10),
+            ("<Control-Left>", -100), ("<Control-Right>", 100),
+        ):
+            self.timestamp_tree.bind(
+                sequence,
+                lambda e, d=delta: (self.run_hotkey(lambda: self.jump_frames(d)), "break")[1],
+            )
         self.timestamp_tree.bind("<Control-a>", self.select_all_timestamps)
 
         # Right: actions that operate on the whole table or selection.
