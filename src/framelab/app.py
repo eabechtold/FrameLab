@@ -51,7 +51,7 @@ PROXY_CRF = "23"
 PROXY_PRESET = "ultrafast"
 PREVIEW_MAX_UPSCALE = 1.0      # 1.0 = never enlarge beyond source resolution
 POLL_MS = 50
-MAX_ZOOM = 16.0
+MAX_PIXEL_SCALE = 16.0  # most screen pixels per source pixel when zoomed
 ZOOM_STEP = 1.25  # zoom multiplier per mouse-wheel notch
 
 
@@ -182,6 +182,7 @@ class FrameLabApplication:
         self._preview_box = None  # (x, y, width, height) of the drawn image on the canvas
         self._redraw_job = None
         self._pan_anchor = None
+        self._scale = 1.0  # screen pixels per source pixel in the last draw
         self.timestamp_sort = ("num", False)  # (column id, descending)
 
         # UI/work state
@@ -1396,22 +1397,46 @@ class FrameLabApplication:
         ret, frame = self.cap.read()
         return frame if ret else None
 
-    def resize_frame_for_preview(self, frame):
-        """Crop ``frame`` to the zoomed view, then scale it to fit the canvas."""
-        h, w = frame.shape[:2]
-        if self.zoom > 1.0:
-            crop_w = max(1, int(round(w / self.zoom)))
-            crop_h = max(1, int(round(h / self.zoom)))
-            x0 = min(int(round(self.view_x * w)), w - crop_w)
-            y0 = min(int(round(self.view_y * h)), h - crop_h)
-            frame = frame[y0:y0 + crop_h, x0:x0 + crop_w]
-            h, w = crop_h, crop_w
+    def _view_geometry(self, frame_w, frame_h, zoom=None):
+        """Return ``(scale, crop_w, crop_h)`` for the preview at ``zoom``.
+
+        Zoom 1 fits the whole frame inside the canvas. Zooming in scales the
+        picture continuously (square pixels, no stretching). Once the picture
+        is bigger than the canvas on an axis, the view crops to the canvas
+        shape on that axis, so past the point where both axes overflow the
+        view fills the canvas edge to edge.
+        """
+        zoom = self.zoom if zoom is None else zoom
         available_w = max(self.video_canvas.winfo_width(), 1)
         available_h = max(self.video_canvas.winfo_height(), 1)
-        # Zooming relaxes the "never enlarge" cap so detail can be magnified.
-        scale = min(available_w / w, available_h / h, PREVIEW_MAX_UPSCALE * self.zoom)
-        new_w = max(1, int(w * scale))
-        new_h = max(1, int(h * scale))
+        fit = min(available_w / frame_w, available_h / frame_h, PREVIEW_MAX_UPSCALE)
+        if zoom <= 1.0:
+            return fit, frame_w, frame_h
+        scale = fit * zoom
+        crop_w = min(frame_w, max(1, round(available_w / scale)))
+        crop_h = min(frame_h, max(1, round(available_h / scale)))
+        return scale, crop_w, crop_h
+
+    def _max_zoom(self, frame_w, frame_h):
+        available_w = max(self.video_canvas.winfo_width(), 1)
+        available_h = max(self.video_canvas.winfo_height(), 1)
+        fit = min(available_w / frame_w, available_h / frame_h, PREVIEW_MAX_UPSCALE)
+        return max(1.0, MAX_PIXEL_SCALE / fit)
+
+    def resize_frame_for_preview(self, frame):
+        """Crop ``frame`` to the zoomed view, then scale it for the canvas."""
+        h, w = frame.shape[:2]
+        scale, crop_w, crop_h = self._view_geometry(w, h)
+        self._scale = scale
+        if self.zoom > 1.0:
+            x0 = min(max(int(round(self.view_x * w)), 0), w - crop_w)
+            y0 = min(max(int(round(self.view_y * h)), 0), h - crop_h)
+            frame = frame[y0:y0 + crop_h, x0:x0 + crop_w]
+            new_w = min(max(1, round(crop_w * scale)), max(self.video_canvas.winfo_width(), 1))
+            new_h = min(max(1, round(crop_h * scale)), max(self.video_canvas.winfo_height(), 1))
+        else:
+            new_w = max(1, int(w * scale))
+            new_h = max(1, int(h * scale))
         # Nearest-neighbor when magnifying keeps individual pixels crisp instead of blurred.
         interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_NEAREST
         return cv2.resize(frame, (new_w, new_h), interpolation=interpolation)
@@ -1457,15 +1482,19 @@ class FrameLabApplication:
         self._preview_box = (x - width / 2, y - height / 2, width, height)
 
         if self.zoom > 1.0:
-            label = f"Zoom {self.zoom * 100:.0f}%  •  drag to pan, double-click to reset"
+            label = f"Zoom {self._scale * 100:.0f}%  •  drag to pan, double-click to reset"
             self.video_canvas.create_text(13, 13, text=label, anchor="nw", fill="black", font=("Segoe UI", 10))
             self.video_canvas.create_text(12, 12, text=label, anchor="nw", fill="#f3f3f3", font=("Segoe UI", 10))
 
     # -- Preview zoom and pan ---------------------------------------------------
     def _clamp_view(self):
-        limit = 1.0 - 1.0 / self.zoom
-        self.view_x = min(max(self.view_x, 0.0), limit)
-        self.view_y = min(max(self.view_y, 0.0), limit)
+        """Keep the zoomed crop inside the frame."""
+        if self._frame_bgr is None:
+            return
+        h, w = self._frame_bgr.shape[:2]
+        _, crop_w, crop_h = self._view_geometry(w, h)
+        self.view_x = min(max(self.view_x, 0.0), 1.0 - crop_w / w)
+        self.view_y = min(max(self.view_y, 0.0), 1.0 - crop_h / h)
 
     def _schedule_redraw(self):
         """Coalesce rapid wheel/drag events into one redraw per idle cycle."""
@@ -1484,18 +1513,30 @@ class FrameLabApplication:
 
     def zoom_at(self, factor, canvas_x, canvas_y):
         """Zoom by ``factor`` keeping the frame point under the cursor fixed."""
-        x0, y0, width, height = self._preview_box
-        fx = min(max((canvas_x - x0) / width, 0.0), 1.0)
-        fy = min(max((canvas_y - y0) / height, 0.0), 1.0)
+        h, w = self._frame_bgr.shape[:2]
+        box_x, box_y, _, _ = self._preview_box
         old = self.zoom
-        new = min(max(old * factor, 1.0), MAX_ZOOM)
+        old_scale, _, _ = self._view_geometry(w, h, old)
+        # Source-pixel coordinates under the cursor before zooming.
+        point_x = self.view_x * w + (canvas_x - box_x) / old_scale
+        point_y = self.view_y * h + (canvas_y - box_y) / old_scale
+
+        new = min(max(old * factor, 1.0), self._max_zoom(w, h))
         if new == old:
             return
-        point_x = self.view_x + fx / old
-        point_y = self.view_y + fy / old
+        if new == 1.0:
+            self.reset_zoom()
+            return
+
+        new_scale, crop_w, crop_h = self._view_geometry(w, h, new)
+        available_w = max(self.video_canvas.winfo_width(), 1)
+        available_h = max(self.video_canvas.winfo_height(), 1)
+        # Where the image will start on the canvas (centered while it is smaller than the canvas).
+        new_box_x = max(0.0, (available_w - crop_w * new_scale) / 2)
+        new_box_y = max(0.0, (available_h - crop_h * new_scale) / 2)
         self.zoom = new
-        self.view_x = point_x - fx / new
-        self.view_y = point_y - fy / new
+        self.view_x = (point_x - (canvas_x - new_box_x) / new_scale) / w
+        self.view_y = (point_y - (canvas_y - new_box_y) / new_scale) / h
         self._clamp_view()
         self._schedule_redraw()
 
@@ -1509,13 +1550,13 @@ class FrameLabApplication:
         self._pan_anchor = (event.x, event.y)
 
     def on_pan_drag(self, event):
-        if self.zoom <= 1.0 or self._pan_anchor is None or self._preview_box is None:
+        if self.zoom <= 1.0 or self._pan_anchor is None or self._frame_bgr is None:
             return
-        _, _, width, height = self._preview_box
+        h, w = self._frame_bgr.shape[:2]
         dx, dy = event.x - self._pan_anchor[0], event.y - self._pan_anchor[1]
         self._pan_anchor = (event.x, event.y)
-        self.view_x -= dx / width / self.zoom
-        self.view_y -= dy / height / self.zoom
+        self.view_x -= dx / self._scale / w
+        self.view_y -= dy / self._scale / h
         self._clamp_view()
         self._schedule_redraw()
 
