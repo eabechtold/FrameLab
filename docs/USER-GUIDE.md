@@ -24,6 +24,17 @@ can reuse the same range.
 Enable **Delete proxy on Browse or Close** if you do not want to retain the
 generated proxy after switching videos or closing FrameLab.
 
+## Add flags
+
+Open **Flags**, enter a description, and select **Add Flag (F)** to flag the
+current frame. Press **F** when focus is outside a text field, or **Enter**
+in the description field. Select a flag to jump to its frame. **Copy** copies
+the table for pasting into Excel, and **Delete** removes selected flags.
+Use **Import…** and **Export…** to load or save timestamp files.
+
+The bottom pane initially fits the Flags controls. Drag the divider above
+the timeline to adjust its height.
+
 ## Export a clip
 
 Open **Clip Export**, select an output speed, review the generated filename,

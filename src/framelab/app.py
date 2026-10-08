@@ -163,6 +163,7 @@ class FrameLabApplication:
 
         self.cap = None
         self.fps = 0.0
+        self.original_fps = 0.0
         self.frame_count = 0
         self.current_frame = 0
         self.start_frame = None
@@ -305,6 +306,17 @@ class FrameLabApplication:
         self.info_card.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         self.info_label = ttk.Label(self.info_card, text="No video loaded", justify=tk.LEFT, wraplength=255)
         self.info_label.pack(fill=tk.X)
+        fps_buttons = ttk.Frame(self.info_card)
+        fps_buttons.pack(anchor="w", pady=(8, 0))
+        self.set_fps_button = ttk.Button(
+            fps_buttons, text="Set Frame Rate…", command=self.set_frame_rate,
+        )
+        self.set_fps_button.grid(row=0, column=0, padx=(0, 6))
+        self.reset_fps_button = ttk.Button(
+            fps_buttons, text="Reset", command=self.reset_frame_rate,
+            state="disabled",
+        )
+        self.reset_fps_button.grid(row=0, column=1)
 
         self.marks_card = ttk.LabelFrame(self.inspector, text="Marked Range", padding=10)
         self.marks_card.grid(row=1, column=0, sticky="ew", pady=8)
@@ -360,7 +372,7 @@ class FrameLabApplication:
         self.clip_tab = ttk.Frame(self.notebook, padding=10)
         self.images_tab = ttk.Frame(self.notebook, padding=10)
         self.notebook.add(self.nav_tab, text="Navigate")
-        self.notebook.add(self.timestamps_tab, text="Timestamps")
+        self.notebook.add(self.timestamps_tab, text="Flags")
         self.notebook.add(self.clip_tab, text="Clip Export")
         self.notebook.add(self.images_tab, text="Frame Images")
 
@@ -368,6 +380,7 @@ class FrameLabApplication:
         self._create_timestamps_tab()
         self._create_clip_tab()
         self._create_images_tab()
+        self.vertical_pane.bind("<Map>", self._initialize_bottom_height)
 
         # ----- Context menu -----
         self.frame_context_menu = tk.Menu(self.root, tearoff=0)
@@ -412,11 +425,9 @@ class FrameLabApplication:
         self.timestamp_entry.bind("<Return>", lambda e: self.add_timestamp())
         self.timestamp_entry.bind("<Escape>", lambda e: self.root.focus_force())
         self.add_timestamp_button = ttk.Button(
-            entry_panel, text="Add Timestamp  (T)", command=self.add_timestamp, style="Accent.TButton",
+            entry_panel, text="Add Flag (F)", command=self.add_timestamp, style="Accent.TButton",
         )
         self.add_timestamp_button.grid(row=2, column=0, sticky="ew")
-        self.timestamp_position_label = ttk.Label(entry_panel, text="No video loaded", foreground="#9ca3af")
-        self.timestamp_position_label.grid(row=3, column=0, sticky="w", pady=(8, 0))
 
         # Center: the timestamp table. Colored dots in the tree column match
         # the flags drawn above the slider.
@@ -429,7 +440,7 @@ class FrameLabApplication:
         table.rowconfigure(0, weight=1)
         self.timestamp_tree = ttk.Treeview(
             table, columns=("num", "time", "frame", "description"), show="tree headings",
-            height=5, selectmode="extended", style="Timestamps.Treeview",
+            height=2, selectmode="extended", style="Timestamps.Treeview",
         )
         self.timestamp_tree.heading(
             "#0", text="Flag", anchor="center", command=lambda: self.sort_timestamps_by("#0"),
@@ -477,16 +488,33 @@ class FrameLabApplication:
         self.export_timestamps_button = ttk.Button(
             transfer, text="Export\u2026", command=self.export_timestamps, width=8)
         self.export_timestamps_button.grid(row=0, column=1, sticky="ew", padx=(3, 0))
-        self.copy_timestamps_button = ttk.Button(
-            actions, text="Copy for Excel", command=self.copy_timestamps_to_clipboard, width=16)
-        self.copy_timestamps_button.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        selection_actions = ttk.Frame(actions)
+        selection_actions.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        selection_actions.columnconfigure((0, 1), weight=1)
         self.delete_timestamp_button = ttk.Button(
-            actions, text="Delete Selected", command=self.delete_timestamp, width=16)
-        self.delete_timestamp_button.grid(row=2, column=0, sticky="ew", pady=(6, 0))
-        ttk.Separator(actions, orient="horizontal").grid(row=3, column=0, sticky="ew", pady=10)
-        self.set_fps_button = ttk.Button(
-            actions, text="Set Frame Rate…", command=self.set_frame_rate, width=16)
-        self.set_fps_button.grid(row=4, column=0, sticky="ew")
+            selection_actions, text="Delete", command=self.delete_timestamp, width=8)
+        self.delete_timestamp_button.grid(row=0, column=0, sticky="ew", padx=(0, 3))
+        self.copy_timestamps_button = ttk.Button(
+            selection_actions, text="Copy", command=self.copy_timestamps_to_clipboard, width=8)
+        self.copy_timestamps_button.grid(row=0, column=1, sticky="ew", padx=(3, 0))
+
+    def _initialize_bottom_height(self, event):
+        """Fit the initial bottom pane to Flags, while keeping the sash adjustable."""
+        self.vertical_pane.unbind("<Map>")
+        self.root.after_idle(self._fit_bottom_to_flags)
+
+    def _fit_bottom_to_flags(self):
+        self.root.update_idletasks()
+        tallest_tab = max(
+            self.root.nametowidget(tab).winfo_reqheight() for tab in self.notebook.tabs()
+        )
+        # Retain the slider, flag strip, tab bar, borders, and padding; replace
+        # the tallest tab's requested height with the Flags tab's height.
+        height = self.bottom.winfo_reqheight() - tallest_tab + self.timestamps_tab.winfo_reqheight()
+        sash_height = self.bottom.winfo_y() - self.vertical_pane.sashpos(0)
+        self.vertical_pane.sashpos(
+            0, max(0, self.vertical_pane.winfo_height() - height - sash_height)
+        )
 
     def _create_clip_tab(self):
         # Compact two-row layout:
@@ -689,7 +717,7 @@ class FrameLabApplication:
             self.run_hotkey(self.set_stop)
         elif key == "q":
             self.run_hotkey(self.export_clip)
-        elif key == "t":
+        elif key == "f":
             self.run_hotkey(self.add_timestamp)
         elif key == "b":
             self.run_hotkey(self.browse_video)
@@ -729,6 +757,7 @@ class FrameLabApplication:
         ):
             widget.state([state])
         self.update_image_subfolder_state()
+        self.update_frame_rate_controls()
 
         if self.cap is not None and not value:
             self.slider.state(["!disabled"])
@@ -808,24 +837,34 @@ class FrameLabApplication:
         return candidate
 
     def update_info(self):
+        self.update_frame_rate_controls()
         if self.cap is None:
             self.info_label.config(text="No video loaded")
-            self.timestamp_position_label.config(text="No video loaded")
             self.current_frame_var.set("0")
             return
 
         current_time = self.format_time(self.frame_to_seconds(self.current_frame))
         total_time = self.format_time(self.frame_to_seconds(self.frame_count - 1))
         self.current_frame_var.set(str(self.current_frame))
-        self.timestamp_position_label.config(text=f"Current position: {current_time}  •  frame {self.current_frame}")
         self.info_label.config(
             text=(
                 f"File:\n{self.filename}\n\n"
                 f"Current Frame:\n{self.current_frame} / {self.frame_count - 1}\n\n"
                 f"Current Time:\n{current_time} / {total_time}\n\n"
-                f"Source FPS:\n{self.fps:.3f}"
+                f"Source FPS:\n{self.original_fps:.3f}"
+                + (f"\n\nOverride FPS:\n{self.fps:.3f} (overridden)" if self.frame_rate_overridden() else "")
             )
         )
+
+    def frame_rate_overridden(self):
+        return self.original_fps > 0 and abs(self.fps - self.original_fps) > 1e-6
+
+    def update_frame_rate_controls(self):
+        enabled = self.cap is not None and not self.busy
+        self.set_fps_button.state(["!disabled" if enabled else "disabled"])
+        self.reset_fps_button.state([
+            "!disabled" if enabled and self.frame_rate_overridden() else "disabled"
+        ])
 
     def update_mark_status(self):
         start_text = (
@@ -900,6 +939,7 @@ class FrameLabApplication:
         self.name = None
         self.ext = None
         self.fps = 0.0
+        self.original_fps = 0.0
         self.frame_count = 0
         self.current_frame = 0
         self.start_frame = None
@@ -1070,6 +1110,7 @@ class FrameLabApplication:
             return False
 
         self.fps = self.cap.get(cv2.CAP_PROP_FPS)
+        self.original_fps = self.fps
         self.frame_count = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         if self.fps <= 0 or self.frame_count <= 0:
             messagebox.showerror("Error", "Could not read video FPS or frame count.")
@@ -1393,7 +1434,8 @@ class FrameLabApplication:
             return
         value = simpledialog.askfloat(
             "Set Frame Rate",
-            "Frame rate (FPS) of the source footage, e.g. 240 for iPhone slo-mo:",
+            "Frame rate (FPS) of the source footage, e.g. 240 for iPhone slo-mo:\n\n"
+            "This overrides the FPS used for time display, timestamp times, and export timing.",
             initialvalue=round(self.fps, 3),
             minvalue=0.1,
             maxvalue=10000.0,
@@ -1402,6 +1444,15 @@ class FrameLabApplication:
         if value is None:
             return
         self.fps = float(value)
+        self.update_info()
+        self.update_mark_status()
+        self.refresh_timestamps()
+
+    def reset_frame_rate(self):
+        """Restore the FPS read when this video was loaded."""
+        if self.cap is None or self.busy or not self.frame_rate_overridden():
+            return
+        self.fps = self.original_fps
         self.update_info()
         self.update_mark_status()
         self.refresh_timestamps()
